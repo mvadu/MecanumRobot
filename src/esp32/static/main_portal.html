@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang='en'>
+
+<head>
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, user-scalable=no" />
+    <meta name='theme-color' content='#000' />
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css"
+        integrity="sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.6.1/css/all.css"
+        integrity="sha384-gfdkjb5BdAXd+lj+gudLWI+BXq4IuLW5IT+brZEZsLFm++aCMlF1V92rMkPaX4PP" crossorigin="anonymous">
+    <script src="https://code.jquery.com/jquery-3.3.1.min.js"
+        integrity="sha384-tsQFqpEReu7ZLhBV2VZlAu7zcOV+rXbYlF2cqB8txI/8aZajjp4Bqd+V6D5IgvKT"
+        crossorigin="anonymous"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/js/bootstrap.min.js"
+        integrity="sha384-ChfqqxuZUCnJSK3+MXmPNIyE6ZbWh2IMqE241rYiqJxyMiZ6OW/JmZQ5stwEULTy"
+        crossorigin="anonymous"></script>
+
+    <style>
+        h1 {
+            text-align: center;
+        }
+
+        body {
+            background-color: rgb(39, 38, 38);
+        }
+
+        header {
+            left: 0;
+            bottom: 0;
+            width: 100%;
+            padding-bottom: 9px;
+            margin: 40px 0 20px;
+            border-bottom: 1px solid #eee;
+            color: #007bff;
+        }
+
+        footer {
+            left: 0;
+            bottom: 0;
+            width: 100%;
+            clear: both;
+            font-size: 16;
+            text-rendering: auto;
+            position: fixed;
+            background-color: rgb(39, 38, 38);
+        }
+
+        .title-text {
+            cursor: pointer;
+            display: block;
+            color: rgb(0, 123, 255);
+        }
+
+        .dir-pad {
+            margin-top: 15px;
+        }
+
+        .dir {
+            border: 1px solid #9e9e9e;
+            border-radius: 999px;
+            height: 80px;
+            background-color: #fff;
+            color: #333;
+            cursor: pointer;
+            width: 80px;
+            float: left;
+            margin: 0 8px 10px 8px;
+            text-align: center;
+        }
+
+        .dir:hover {
+            background-color: #9e9e9e;
+            transition-property: background-color .2s linear 0s;
+        }
+
+        .icn {
+            font-size: 30px;
+            text-align: center;
+            margin-top: 30%;
+            line-height: 30px;
+        }
+
+        .failed {
+            color: crimson;
+            font-size: x-large;
+            text-align: center;
+        }
+
+        .disconnected {
+            color: darkred;
+            font-size: larger;
+            text-align: center;
+        }
+
+        .entry {
+            color: rgb(242, 243, 165);
+            display: block;
+        }
+
+        .main {
+            padding-bottom: 70px;
+        }
+
+        .sel {
+            color: salmon;
+        }
+    </style>
+    <script language='javascript'>
+        "use strict";
+        const STOP_Moving = 5;
+        const RemoteMessage =
+        {
+            Remote_Dir: 1,
+            Remote_Speed: 2,
+            Request_Status: 0xF0,
+            Heartbeat_Req: 0xAA,
+            Heartbeat_Resp: 0xBB,
+            Close_Connection: 0xCC,
+            Confirm_Connection: 0xDD,
+            Motor_Lost: 0xE0,
+            Motor_Restored: 0xE1
+        };
+        Object.freeze(RemoteMessage);
+
+        $(document).ready(function () {
+            let remote;
+
+            $(".dir").on('pointerdown', function (e) {
+                $(this).addClass('sel');
+                reportDir();
+            });
+            $(".dir").on('pointerup', function (e) {
+                $(this).removeClass('sel');
+                reportDir();
+            });
+            $(".dir").on('pointerleave', function (e) {
+                $(this).removeClass('sel');
+                reportDir();
+            });
+
+            $("#clearLogs").on('click', function (e) {
+                $('#logEntries').empty();
+            });
+
+            setTimeout(function () {
+                $.get("/getWifiStatus", function (response) {
+                    if (response.status == '3') {
+                        $('#stat').text(`Connected to ${response.AP} - ${response.IP}\(${response.Name}\)`)
+                    }
+                    else {
+                        $('#stat').text("Not Connected!!");
+                    }
+                });
+            }, 500);
+
+            var failureCount = 0, pendingHeartbeatCount = 0, heartbeat_interval = null, rejectedCon = false, lastReceiveTs = 0;
+            setTimeout(function () {
+                if ("WebSocket" in window) {
+                    logEntries_Update('Connecting..');
+                    connect_Controller();
+                    if (/logs$/.test(window.location)) {
+                        connect_logger();
+                    } else {
+                        $(".logger.disconnected").show();
+                        $("#connectLogger").on("click", function () {
+                            window.history.replaceState({}, window.title, "/?logs");
+                            connect_logger();
+                            $(".logger.disconnected").hide();
+                        });
+                    }
+                } else {
+                    // The browser doesn't support WebSocket
+                    logEntries_Update("WebSocket NOT supported by your Browser!");
+                }
+            }, 1000);
+
+            function reportDir() {
+                var d = $(".sel:first").attr('id');
+                if (!d)
+                    d = STOP_Moving;
+                try {
+                    var byteArray = new ArrayBuffer(2);
+                    const view = new DataView(byteArray);
+                    view.setUint8(0, 1); //we are reporting direction
+                    view.setUint8(1, d);
+                    remote.send(byteArray, { binary: true });
+                } catch (t) {
+                    logEntries_Update(t);
+                }
+            }
+            function connect_logger() {
+                var logger = new WebSocket("ws://" + window.location.host + "/logs");
+                logger.onopen = function () {
+                    $('.entry').last().remove();
+                    logEntries_Update('Connected..');
+                };
+
+                logger.onmessage = function (evt) {
+                    logEntries_Update(evt.data);
+                };
+
+                logger.onclose = function () {
+                    // websocket is closed.
+                    logEntries_Update("Connection is closed...");
+                };
+            }
+
+            function connect_Controller() {
+                logEntries_Update('Connecting..');
+                // Let us open a web socket
+                remote = new WebSocket("ws://" + window.location.host + "/remote");
+                remote.binaryType = 'arraybuffer';
+                remote.onopen = function () {
+                    $('.entry').last().remove();
+                    logEntries_Update('Connected..');
+                };
+
+                remote.onmessage = function (evt) {
+                    if (evt.data instanceof ArrayBuffer) {
+                        HandleBinaryMessage(evt.data);
+                    } else {
+                        logEntries_Update(evt.data);
+                    }
+                    lastReceiveTs = Date.now();
+                };
+
+                remote.onerror = function (event) {
+                    logEntries_Update(event);
+                };
+
+                remote.onclose = function (event) {
+                    // websocket is closed.
+                    logEntries_Update(event);
+                    failureCount++;
+                    $(".controller.connected").hide();
+                    $(".controller.disconnected").show();
+                    clearInterval(heartbeat_interval);
+                    heartbeat_interval = null;
+                    if (failureCount > 10) {
+                        $(".controller.disconnected").hide();
+                        $(".controller.failed").show();
+                    } else if (!rejectedCon) {
+                        setTimeout(connect_Controller, 1000);
+                    }
+                };
+            }
+
+            function ConnectionConfirmed() {
+                $(".controller.disconnected").hide();
+                $(".controller.connected").show();
+                failureCount = 0;
+                pendingHeartbeatCount = 0;
+                if (heartbeat_interval == null) {
+                    heartbeat_interval = setInterval(function () {
+                        try {
+                            if (Date.now() - lastReceiveTs < 500) return;
+                            if (pendingHeartbeatCount >= 5)
+                                throw new Error("Too many missed heartbeats.");
+                            sendHeartbeatReq();
+                        } catch (e) {
+                            clearInterval(heartbeat_interval);
+                            heartbeat_interval = null;
+                            logEntries_Update("Closing connection. Reason: " + e.message);
+                            if (remote.readyState == WebSocket.OPEN)
+                                remote.close();
+                        }
+                    }, 1000);
+                }
+            }
+
+
+            function HandleBinaryMessage(e) {
+                if (e && e instanceof ArrayBuffer) {
+                    const view = new DataView(e);
+                    switch (view.getUint8(0)) {
+                        case RemoteMessage.Request_Status:
+                            reportDir();
+                            console.log("reporting status");
+                            break;
+                        case RemoteMessage.Heartbeat_Req:
+                            if (view.getUint8(1) != 1) {
+                                logEntries_Update(`Server thinks it is waiting for ${view.getUint8(1)} heartbeat checks`);
+                            }
+                            view.setUint8(0, RemoteMessage.Heartbeat_Resp); //Heartbeat_Resp
+                            remote.send(e, { binary: true });
+                            break;
+                        case RemoteMessage.Heartbeat_Resp:
+                            pendingHeartbeatCount = 0;
+                            break;
+                        case RemoteMessage.Close_Connection:
+                            remote.close();
+                            logEntries_Update("Server rejected this remote. Closing connection.");
+                            rejectedCon = true;
+                            break;
+                        case RemoteMessage.ConnectionConfirmed:
+                            ConnectionConfirmed();
+                            break;
+                        case RemoteMessage.Motor_Lost:
+                            $(".controller.connected").hide();
+                            $(".controller.disconnected2").show();
+                            break;
+                        case RemoteMessage.Motor_Restored:
+                            $(".controller.connected").show();
+                            $(".controller.disconnected2").hide();
+                            break;
+
+                    }
+                } else if (e) {
+                    console.log("Can't use this function with a non array buffer param");
+                }
+            }
+
+            function sendHeartbeatReq() {
+                try {
+                    var byteArray = new ArrayBuffer(2);
+                    const view = new DataView(byteArray);
+                    view.setUint8(0, RemoteMessage.Heartbeat_Req); 
+                    view.setUint8(1, ++pendingHeartbeatCount);
+                    remote.send(byteArray, { binary: true });
+                } catch (t) {
+                    logEntries_Update(t);
+                }
+            }
+
+            function logEntries_Update(e) {
+                var logEntry;
+                if (e) {
+                    if ("string" == typeof e || e instanceof String) {
+                        logEntry = e;
+                    }
+                    if (e instanceof CloseEvent) {
+                        logEntry = `Socket closed [${e.code}] due to ${e.reason}, wasClean:${e.wasClean}`;
+                    }
+                    else {
+                        try {
+                            logEntry = JSON.stringify(e, null, " ");
+                        } catch (t) {
+                            logEntry = e.toString();
+                        }
+                    }
+                }
+                var entry = document.createElement("span");
+                var text = logEntry.trim();
+                if ("\n" !== text && "\r" !== text && "\r\n" !== text && "" !== text) {
+                    entry.textContent = new Date().toISOString() + "\t" + text;
+                    entry.classList.add('entry');
+                    $('#logEntries').append(entry);
+                }
+            }
+
+        });           
+    </script>
+    <title>Mecanum Robot Controller</title>
+</head>
+
+<body>
+    <wrapper class="d-flex flex-column">
+        <header>
+            <h1>Mecanum Robot Controller</h1>
+        </header>
+        <main role="main" class="flex-fill main">
+            <div class="card-group">
+                <div class="card text-white bg-dark">
+                    <div class="section">
+                        <h4 class="card-title">
+                            <span data-toggle="collapse" class="title-text" data-target="#controllerCard">Remote
+                                Control</span>
+                        </h4>
+                    </div>
+                    <div id="controllerCard" class="section collapse show">
+                        <div class="controller">
+                            <div class="controller connected col-md-4 col-md-offset-4 dir-pad">
+                                <div class="col-md-8">
+                                    <div class="dir-pad">
+                                        <div class="dir" id="1">
+                                            <i class="icn fas fa-location-arrow fa-rotate-270"></i>
+                                        </div>
+                                        <div class="dir" id="2">
+                                            <i class="icn fas fa-angle-double-up"></i>
+                                        </div>
+                                        <div class="dir" id="3">
+                                            <i class="icn fas fa-location-arrow "></i>
+                                        </div>
+                                        <div class="dir" id="4">
+                                            <i class="icn fas  fa-angle-double-left "></i>
+                                        </div>
+                                        <div class="dir" id="5">
+                                            <i class="icn fas fa-ban"></i>
+                                        </div>
+                                        <div class="dir" id="6">
+                                            <i class="icn fas  fa-angle-double-right "></i>
+                                        </div>
+                                        <div class="dir" id="7">
+                                            <i class="icn fas fa-location-arrow fa-rotate-180"></i>
+                                        </div>
+                                        <div class="dir" id="8">
+                                            <i class="icn fas fa-angle-double-down"></i>
+                                        </div>
+                                        <div class="dir" id="9">
+                                            <i class="icn fas fa-location-arrow  fa-rotate-90"></i>
+                                        </div>
+                                        <div class="dir" id="10">
+                                            <i class="icn fas fa-undo-alt"></i>
+                                        </div>
+                                        <div class="dir" id="5">
+                                            <i class="icn fas fa-stop"></i>
+                                        </div>
+                                        <div class="dir" id="11">
+                                            <i class="icn fas fa-redo-alt"></i>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="controller disconnected collapse">
+                                <span>Lost Connection!! Waiting for it to restore..</span>
+                            </div>
+                            <div class="controller failed collapse">
+                                <span>Too many failures!! Please refresh the page to reconnect.</span>
+                            </div>
+                            <div class="controller disconnected2 collapse">
+                                <span>Lost Connection with Motor Controller!! Waiting for it to restore..</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card-group">
+                <div class="card text-white bg-dark">
+                    <div class="section">
+                        <h4 class="card-title">
+                            <span data-toggle="collapse" class="title-text" data-target="#logsCard">Logs</span>
+                        </h4>
+                    </div>
+                    <div id="logsCard" class="section collapse">
+                        <div class="logger connected">
+                            <button id="clearLogs">Clear Logs</button>
+                            <div id="logEntries" style="min-height:350px"></div>
+                        </div>
+                        <div class="logger disconnected collapse">
+                            <span>Logger not connected..
+                                <span class="title-text" id="connectLogger">Connect Logger</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+        <footer class="fixed-bottom container-fluid w-100 text-light py-3">
+            <div>
+                <span class="text-muted" id='stat'></span>
+                <a href="/config">
+                    <i class="fas fa-cog"></i>
+                </a>
+                <span class="text-muted">Copyright: Adystech.com</span>
+            </div>
+        </footer>
+    </wrapper>
+</body>
+
+</html>
